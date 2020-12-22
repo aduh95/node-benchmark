@@ -96,7 +96,7 @@ for (const { all, confidentResults } of Object.values(results)) {
 
 {
   const gitDiff = spawn("git", ["diff", "HEAD", "upstream/master", filePath]);
-  const diffSep = /^@@\s-(\d+),\d+\s\+\d+,\d+\s@@/;
+  const diffSep = /^@@\s-\d+,\d+\s\+(\d+),\d+\s@@/;
 
   gitDiff.on("error", console.error);
   gitDiff.stderr.pipe(process.stderr);

@@ -9,9 +9,11 @@ and compile a version without each change. You can then run
 
 ### Usage
 
+Commands to run from `node` git repo folder:
+
 ```console
-$ ./bisectFileChanges.mjs <file-path> <benchmark-family> <benchmark-args> | sh
+$ <this-repo-path>/bisectFileChanges.mjs <file-path> <benchmark-family> <benchmark-args> | sh
 $ rm *.diff
 $ mv *.csv <path-where-csv-files-are-stored>
-$ ls -1 <path-where-csv-files-are-stored>/*.csv | ./revertNonPerfChanges.mjs <compare.R-path> <file-path> | git apply
+$ ls -1 <path-where-csv-files-are-stored>/*.csv | <this-repo-path>/revertNonPerfChanges.mjs <compare.R-path> <file-path> | git apply
 ```
