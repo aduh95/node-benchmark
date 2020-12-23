@@ -4,7 +4,7 @@ import readline from "readline";
 import { spawn } from "child_process";
 import { createReadStream } from "fs";
 
-const [, , comparePath, filePath] = process.argv;
+const [, , comparePath, filePath, threshold = 9] = process.argv;
 const { length: cpuCores } = os.cpus();
 
 const lineNumberRegex = /^[^-]+-(\d+)\.csv$/;
@@ -102,15 +102,22 @@ function median(arr) {
 const lineNumbers = new Set();
 for (const { all, confidentResults } of Object.values(results)) {
   //   console.log(all);
-  if (confidentResults.length !== 0 && new Set(all).size > 2) {
+  if (confidentResults.length !== 0) {
     // console.log(`${test.trim()}:`);
     // console.log(
     //   `Ratio of confident results: ${confidentResults.length / all.length}`
     // );
     // stats(all);
     // stats(confidentResults);
-    const max = Math.max(...all.filter(Number));
-    lineNumbers.add(all.indexOf(max));
+    const allFiltered = all.filter(Number);
+    const computedMedian = median(allFiltered);
+    if (computedMedian < -3) {
+      const max = Math.max(...allFiltered);
+
+      if (max - computedMedian > threshold) {
+        lineNumbers.add(all.indexOf(max));
+      }
+    }
   }
 }
 
