@@ -2,29 +2,15 @@
 import os from "os";
 import readline from "readline";
 import { spawn } from "child_process";
-import { createReadStream } from "fs";
 
-const [, , comparePath, filePath, threshold = 9] = process.argv;
+const [, , comparePath, archivePath, threshold = 9] = process.argv;
 const { length: cpuCores } = os.cpus();
 
-const lineNumberRegex = /^[^-]+-(\d+)\.csv$/;
-const row = /^([^*]+)\s+(\**\s*)(-?\d+\.\d\d)\s%(?:\s+.\d+\.\d+%){3}$/;
-const results = {};
-const handleLine = (currentLineNumber) => (line) => {
-  if (line.endsWith("%")) {
-    const [, test, confidence, resultString] = line.match(row);
-    results[test] ??= {
-      all: [],
-      confidentResults: [],
-    };
-
-    const result = parseFloat(resultString);
-    results[test].all[currentLineNumber] = result;
-    if (confidence) {
-      results[test].confidentResults[currentLineNumber] = result;
-    }
-  }
-};
+if (process.argv.length < 4) {
+  console.error("Usage: $0 <path-to-compare.R> <archive-path> <threshold?=9>");
+  console.error("\t Example: $0 benchmark/compare.R events.tgz");
+  process.exit(1);
+}
 
 const subprocesses = new Set();
 const subprocessExitPromises = new WeakMap();
@@ -53,13 +39,37 @@ async function spawnSubprocess(...args) {
 
   return subprocess;
 }
-for await (const line of readline.createInterface({ input: process.stdin })) {
-  const rProcess = await spawnSubprocess("Rscript", [comparePath]);
 
-  createReadStream(line).pipe(rProcess.stdin);
+const ls = await spawnSubprocess("tar", ["-tzf", archivePath, "'*.csv'"]);
+
+const row = /^([^*]+)\s+(\**\s*)(-?\d+\.\d\d)\s%(?:\s+.\d+\.\d+%){3}$/;
+const results = {};
+const handleLine = (diffFile) => (line) => {
+  if (line.endsWith("%")) {
+    const [, test, confidence, resultString] = line.match(row);
+    results[test] ??= {
+      files: [],
+      data: [],
+      hasConfidentResults: false,
+    };
+
+    results[test].files.push(diffFile);
+    results[test].data.push(parseFloat(resultString));
+
+    if (confidence) {
+      results[test].hasConfidentResults = true;
+    }
+  }
+};
+
+for await (const csv of readline.createInterface({ input: ls.stdin })) {
+  const rProcess = await spawnSubprocess("Rscript", [comparePath]);
+  const untar = await spawnSubprocess("tar", ["-xOzf", archivePath, csv]);
+
+  untar.stdout.pipe(rProcess.stdin);
   readline
     .createInterface({ input: rProcess.stdout })
-    .on("line", handleLine(line.match(lineNumberRegex)[1]));
+    .on("line", handleLine(csv.replace(/\.csv$/, ".diff")));
 }
 
 await Promise.all(
@@ -99,46 +109,27 @@ function median(arr) {
   return sortedValues[((arr.length - 1) / 2) | 0];
 }
 
-const lineNumbers = new Set();
-for (const { all, confidentResults } of Object.values(results)) {
+const diffFiles2Apply = new Set();
+for (const { files, data, hasConfidentResults } of Object.values(results)) {
   //   console.log(all);
-  if (confidentResults.length !== 0) {
+  if (hasConfidentResults) {
     // console.log(`${test.trim()}:`);
     // console.log(
     //   `Ratio of confident results: ${confidentResults.length / all.length}`
     // );
     // stats(all);
     // stats(confidentResults);
-    const allFiltered = all.filter(Number);
-    const computedMedian = median(allFiltered);
+    const computedMedian = median(data);
     if (computedMedian < -3) {
-      const max = Math.max(...allFiltered);
+      const max = Math.max(...data);
 
       if (max - computedMedian > threshold) {
-        lineNumbers.add(all.indexOf(max));
+        diffFiles2Apply.add(files[data.indexOf(max)]);
       }
     }
   }
 }
 
-{
-  const gitDiff = await spawnSubprocess("git", [
-    "diff",
-    "HEAD",
-    "upstream/master",
-    filePath,
-  ]);
-  const diffSep = /^@@\s-\d+,\d+\s\+(\d+),\d+\s@@/;
-
-  let outputEnabled = true;
-  for await (const line of readline.createInterface({
-    input: gitDiff.stdout,
-  })) {
-    if (line.startsWith("@@")) {
-      outputEnabled = lineNumbers.has(parseInt(line.match(diffSep)[1]));
-    }
-    if (outputEnabled) {
-      process.stdout.write(`${line}\n`);
-    }
-  }
-}
+(
+  await spawnSubprocess("tar", ["-xOzf", archivePath, ...diffFiles2Apply])
+).stdout.pipe(process.stdout);
