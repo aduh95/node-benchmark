@@ -26,32 +26,52 @@ const handleLine = (currentLineNumber) => (line) => {
   }
 };
 
-let aliveSubProcesses = 0;
+const subprocesses = new Set();
+const subprocessExitPromises = new WeakMap();
 async function spawnSubprocess(...args) {
-  while (aliveSubProcesses >= cpuCores) {
-    await new Promise(setImmediate);
+  if (subprocesses.size >= cpuCores) {
+    await Promise.any(
+      Array.from(subprocesses, (cp) => {
+        if (subprocessExitPromises.has(cp)) subprocessExitPromises.get(cp);
+        else {
+          const promise = new Promise((d) => cp.once("exit", d));
+          subprocessExitPromises.set(cp, promise);
+          return promise;
+        }
+      })
+    );
   }
-  return spawn(...args);
+  const subprocess = spawn(...args);
+  subprocesses.add(subprocess);
+
+  subprocess.on("error", console.error);
+  subprocess.stderr.pipe(process.stderr);
+
+  subprocess.once("exit", () => {
+    subprocesses.delete(subprocess);
+  });
+
+  return subprocess;
 }
 for await (const line of readline.createInterface({ input: process.stdin })) {
   const rProcess = await spawnSubprocess("Rscript", [comparePath]);
-
-  rProcess.on("error", console.error);
-  rProcess.stderr.pipe(process.stderr);
 
   createReadStream(line).pipe(rProcess.stdin);
   readline
     .createInterface({ input: rProcess.stdout })
     .on("line", handleLine(line.match(lineNumberRegex)[1]));
-  rProcess.on("exit", () => {
-    aliveSubProcesses--;
-  });
-  aliveSubProcesses++;
 }
 
-while (aliveSubProcesses) {
-  await new Promise(setImmediate);
-}
+await Promise.all(
+  Array.from(subprocesses, (cp) => {
+    if (subprocessExitPromises.has(cp)) subprocessExitPromises.get(cp);
+    else {
+      const promise = new Promise((d) => cp.once("exit", d));
+      subprocessExitPromises.set(cp, promise);
+      return promise;
+    }
+  })
+);
 
 function stats(arr) {
   const all = arr.filter(Number);
@@ -95,11 +115,13 @@ for (const { all, confidentResults } of Object.values(results)) {
 }
 
 {
-  const gitDiff = spawn("git", ["diff", "HEAD", "upstream/master", filePath]);
+  const gitDiff = await spawnSubprocess("git", [
+    "diff",
+    "HEAD",
+    "upstream/master",
+    filePath,
+  ]);
   const diffSep = /^@@\s-\d+,\d+\s\+(\d+),\d+\s@@/;
-
-  gitDiff.on("error", console.error);
-  gitDiff.stderr.pipe(process.stderr);
 
   let outputEnabled = true;
   for await (const line of readline.createInterface({
