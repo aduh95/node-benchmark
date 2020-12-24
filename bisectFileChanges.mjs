@@ -3,7 +3,7 @@
 import { spawn } from "child_process";
 import fs from "fs";
 import os from "os";
-import path from "path";
+import { sep } from "path";
 import process from "process";
 import readline from "readline";
 
@@ -20,7 +20,10 @@ const gitDiff = spawn("git", ["diff", "HEAD", "upstream/master", path2diff]);
 gitDiff.on("error", console.error);
 gitDiff.stderr.pipe(process.stderr);
 
-const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "foo-"));
+const dir = fs.mkdtempSync(os.tmpdir() + sep);
+console.log(
+  `[ -f ${benchmark}.tar.gz ] && echo "Error: ${benchmark}.tar.gz already exists" && exit 1`
+);
 
 const asyncWork = [];
 const diffSep = /^@@\s-\d+,\d+\s\+(\d+),\d+\s@@/;
@@ -29,13 +32,12 @@ let header;
 let readingHeader;
 let currentOutput;
 let fileName;
-let skipIndex = 0;
+let fileIndex = 0;
 for await (const line of readline.createInterface({ input: gitDiff.stdout })) {
   if (line.startsWith("diff")) {
     readingHeader = true;
     header = "";
-    fileName = `${dir}/${Buffer.from(line).toString("hex")}`;
-    skipIndex++;
+    fileName = `${dir}/${fileIndex++}`;
   }
   if (diffSep.test(line)) {
     readingHeader = false;
@@ -47,13 +49,12 @@ for await (const line of readline.createInterface({ input: gitDiff.stdout })) {
     );
     currentOutput.write(header);
     console.log(
-      `git reset --hard && git apply ${fileName}-${currentLineNumber}.diff && make -j8 && mv out/Release/node ${fileName}-${currentLineNumber}.exe || SKIP_${skipIndex}_${currentLineNumber}=1`
+      `git reset --hard && git apply ${fileName}-${currentLineNumber}.diff && make -j8 && mv out/Release/node ${fileName}-${currentLineNumber}.exe || SKIP_${fileIndex}_${currentLineNumber}=1`
     );
     asyncWork.push(
-      `[ -z $SKIP_${skipIndex}_${currentLineNumber} ] && (node benchmark/compare.js --new ./${fileName}-${currentLineNumber}.exe --old ./node_master ${
+      `[ -z $SKIP_${fileIndex}_${currentLineNumber} ] && (node benchmark/compare.js --new ${fileName}-${currentLineNumber}.exe --old ./node_master ${
         args ?? ""
-      } -- ${benchmark} > ${fileName}-${currentLineNumber}.csv || rm ${fileName}-${currentLineNumber}.csv)&`,
-      `[ -z $SKIP_${skipIndex}_${currentLineNumber} ] && rm ${fileName}-${currentLineNumber}.exe`
+      } -- ${benchmark} > ${fileName}-${currentLineNumber}.csv || rm ${fileName}-${currentLineNumber}.csv)&`
     );
   }
 
@@ -61,10 +62,16 @@ for await (const line of readline.createInterface({ input: gitDiff.stdout })) {
   else currentOutput.write(`${line}\n`);
 }
 currentOutput?.close();
+
+console.log(`echo "Temp dir: ${dir}"`);
+
 asyncWork.forEach((e, i) => {
   console.log(e);
   if (i % cpuCores === cpuCores - 1) console.log("wait");
 });
 console.log("wait");
+console.log(`echo "Files saved to ${dir}"`);
+console.log(`rm ${dir}/*.exe`);
 console.log(`tar -czf ${benchmark}.tar.gz -C ${dir} .`);
 console.log(`rm -r ${dir}`);
+console.log(`echo "Done: Archived to ${benchmark}.tar.gz and deleted ${dir}"`);
