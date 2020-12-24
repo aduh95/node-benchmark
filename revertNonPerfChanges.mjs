@@ -12,41 +12,35 @@ if (process.argv.length < 4) {
   process.exit(1);
 }
 
-const subprocesses = new Set();
-const subprocessExitPromises = new WeakMap();
+let aliveSubProcesses = 0;
 async function spawnSubprocess(...args) {
-  if (subprocesses.size >= cpuCores) {
-    await Promise.any(
-      Array.from(subprocesses, (cp) => {
-        if (subprocessExitPromises.has(cp)) subprocessExitPromises.get(cp);
-        else {
-          const promise = new Promise((d) => cp.once("exit", d));
-          subprocessExitPromises.set(cp, promise);
-          return promise;
-        }
-      })
-    );
+  while (aliveSubProcesses >= cpuCores) {
+    await new Promise(setImmediate);
   }
   const subprocess = spawn(...args);
-  subprocesses.add(subprocess);
 
   subprocess.on("error", console.error);
   subprocess.stderr.pipe(process.stderr);
 
   subprocess.once("exit", () => {
-    subprocesses.delete(subprocess);
+    aliveSubProcesses--;
   });
+  aliveSubProcesses++;
 
   return subprocess;
 }
 
-const ls = await spawnSubprocess("tar", ["-tzf", archivePath, "'*.csv'"]);
+const ls = await spawnSubprocess("tar", ["-tzf", archivePath, "*.csv"]);
 
 const row = /^([^*]+)\s+(\**\s*)(-?\d+\.\d\d)\s%(?:\s+.\d+\.\d+%){3}$/;
+let testNameMaxLength = 0;
 const results = {};
 const handleLine = (diffFile) => (line) => {
   if (line.endsWith("%")) {
-    const [, test, confidence, resultString] = line.match(row);
+    const [, testName, confidence, resultString] = line.match(row);
+    const test = testName.trim();
+    if (test.length > testNameMaxLength) testNameMaxLength = test.length;
+
     results[test] ??= {
       files: [],
       data: [],
@@ -62,7 +56,7 @@ const handleLine = (diffFile) => (line) => {
   }
 };
 
-for await (const csv of readline.createInterface({ input: ls.stdin })) {
+for await (const csv of readline.createInterface({ input: ls.stdout })) {
   const rProcess = await spawnSubprocess("Rscript", [comparePath]);
   const untar = await spawnSubprocess("tar", ["-xOzf", archivePath, csv]);
 
@@ -72,16 +66,9 @@ for await (const csv of readline.createInterface({ input: ls.stdin })) {
     .on("line", handleLine(csv.replace(/\.csv$/, ".diff")));
 }
 
-await Promise.all(
-  Array.from(subprocesses, (cp) => {
-    if (subprocessExitPromises.has(cp)) subprocessExitPromises.get(cp);
-    else {
-      const promise = new Promise((d) => cp.once("exit", d));
-      subprocessExitPromises.set(cp, promise);
-      return promise;
-    }
-  })
-);
+while (aliveSubProcesses) {
+  await new Promise(setImmediate);
+}
 
 function stats(arr) {
   const all = arr.filter(Number);
@@ -110,7 +97,10 @@ function median(arr) {
 }
 
 const diffFiles2Apply = new Set();
-for (const { files, data, hasConfidentResults } of Object.values(results)) {
+console.error(`${"Test name".padEnd(testNameMaxLength)}\tMedian\tBest\tDiff`);
+for (const [test, { files, data, hasConfidentResults }] of Object.entries(
+  results
+)) {
   //   console.log(all);
   if (hasConfidentResults) {
     // console.log(`${test.trim()}:`);
@@ -122,8 +112,14 @@ for (const { files, data, hasConfidentResults } of Object.values(results)) {
     const computedMedian = median(data);
     if (computedMedian < -3) {
       const max = Math.max(...data);
+      const diff = max - computedMedian;
 
-      if (max - computedMedian > threshold) {
+      if (diff > threshold) {
+        console.error(
+          `${test.padEnd(
+            testNameMaxLength
+          )}\t${computedMedian}%\t${max}%\t${diff.toFixed(2)}%`
+        );
         diffFiles2Apply.add(files[data.indexOf(max)]);
       }
     }
